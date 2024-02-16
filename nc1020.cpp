@@ -854,7 +854,7 @@ namespace wqx
 		{
 			rom_volume0[i] = (0x8000 * i);
 			rom_volume1[i] = (0x8000 * (0x100 + i));
-			rom_volume2[i] = (0x8000 * (0x200 + i));
+			rom_volume1[i] = (0x8000 * (0x200 + i));
 		}
 		for (uint32_t i = 0; i < 0x20; i++)
 		{

@@ -22,12 +22,34 @@ static uint8_t lcd_buf[SCREEN_WIDTH * SCREEN_HEIGHT / 8];
 
 M5Canvas renderer;
 
+#define KEY_SIZE 0x3f
+
+// keyboard Mapping:
+// BtnA: POWER 0x0f
+// ROW1: es 1  2  3  4  5  6  7  8  9  0  f1 f3 f2
+// ROW2: _  Q  W  E  R  T  Y  U  I  O  P  pu pd f4
+// ROW3: sh cp A  S  D  F  G  H  J  K  L  ^  .  en
+// ROW4: hp 0  ex Z  X  C  V  B  N  M  <  v  >  =
+// when ex ->
+// ROW1: _  yh mp js xc cy qt wl _  _  _  _  _  _
+
+const char kb_map[4][14] = {
+    {0x3B, 0x34, 0x35, 0x36, 0x2c, 0x2d, 0x2e, 0x24, 0x25, 0x26, 0x3c, 0x10, 0x12, 0x11},
+    {0x00, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x18, 0x1c, 0x37, 0x1e, 0x13},
+    {0x39, 0x3a, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x19, 0x1a, 0x3d, 0x1d},
+    {0x38, 0x3c, 0x00, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x3f, 0x1b, 0x1f, 0x3e}};
+
+bool kb_state[KEY_SIZE] = {0};
+
+const char extend_kb_map[14] = {
+    0x3B, 0x0b, 0x0c, 0x0d, 0x0a, 0x09, 0x08, 0x0e, 0x25, 0x26, 0x3c, 0x10, 0x12, 0x11};
+
 void setup()
 {
   M5.begin();
   sd_begin();
 
-  //todo testing
+  // todo testing
   renderer.setColorDepth(8);
   renderer.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);
   renderer.createPalette();
@@ -42,7 +64,10 @@ void setup()
       .romTempPath = "/__tmp_obj_lu.bin",
       .norTempPath = "/__tmp_nc1020.fls",
   };
+
+  M5.Display.print("Load ROM...");
   wqx::Initialize(rom);
+  M5.Display.print("Load NOR...");
   wqx::LoadNC1020();
 }
 
@@ -67,6 +92,65 @@ void Render()
   renderer.pushRotateZoom(&M5.Display, 0, (float)M5.Display.width() / renderer.width(), (float)M5.Display.height() / renderer.height());
 }
 
+void ProcessKeyboard()
+{
+  if (M5Cardputer.BtnA.wasPressed()) {
+    wqx::SetKey(0x0f, true);
+  }
+  if (M5Cardputer.BtnA.wasReleased()) {
+    wqx::SetKey(0x0f, false);
+  }
+  if (M5Cardputer.Keyboard.isChange())
+  {
+    std::vector<Point2D_t> keys = M5Cardputer.Keyboard.keyList();
+    bool new_kb_state[KEY_SIZE] = {0};
+    bool ex_mode = false;
+
+    // find ex_key first
+    for (auto &i : keys)
+    {
+      uint8_t key_code = kb_map[i.x][i.y];
+      if (key_code == 0)
+      {
+        ex_mode = true;
+        break;
+      }
+    }
+    // map key_code
+    for (auto &i : keys)
+    {
+      uint8_t key_code;
+      // first line
+      if (ex_mode && i.x == 0)
+      {
+        key_code = extend_kb_map[i.y];
+      }
+      else
+      {
+        key_code = kb_map[i.x][i.y];
+      }
+      if (key_code == 0)
+      {
+        continue;
+      }
+      new_kb_state[key_code] = true;
+    }
+
+    for (int i = 0; i < KEY_SIZE; i++)
+    {
+      if (new_kb_state[i] == true)
+      {
+        wqx::SetKey(i, true);
+      }
+      if (new_kb_state[i] == false && kb_state[i] == true)
+      {
+        wqx::SetKey(i, false);
+      }
+      kb_state[i] = new_kb_state[i];
+    }
+  }
+}
+
 void RunGame()
 {
   bool loop = true;
@@ -78,15 +162,7 @@ void RunGame()
 
     wqx::RunTimeSlice(FRAME_INTERVAL, false);
 
-    while (M5Cardputer.Keyboard.isChange())
-    {
-      if (M5Cardputer.Keyboard.isPressed())
-      {
-        //todo keyboard map
-        Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
-        wqx::SetKey(status.hid_keys[0], true);
-      }
-    }
+    ProcessKeyboard();
 
     if (!wqx::CopyLcdBuffer(lcd_buf))
     {
@@ -98,22 +174,26 @@ void RunGame()
   }
 }
 
- void sd_begin()
+void sd_begin()
+{
+  M5.Display.setTextSize(1);
+  M5.Display.print("SDCard Checking...");
+
+  SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
+  if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000))
   {
-    SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
-    if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000))
-    {
-      M5.Display.print("SDCard Failed");
-      while (1)
-        ;
-    }
-     uint8_t cardType = SD.cardType();
-
-    if (cardType == CARD_NONE) {
-      M5.Display.print("SDCard Failed");
-        return;
-    }
-
-    uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-    M5.Display.printf("SD Size: %lluMB\n", cardSize);
+    M5.Display.print("SDCard Failed");
+    while (1)
+      ;
   }
+  uint8_t cardType = SD.cardType();
+
+  if (cardType == CARD_NONE)
+  {
+    M5.Display.print("SDCard Failed");
+    return;
+  }
+
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  M5.Display.printf("SD Size: %lluMB\n", cardSize);
+}
