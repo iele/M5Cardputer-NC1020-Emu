@@ -47,6 +47,8 @@ const char extend_kb_map[14] = {
 void setup()
 {
   M5.begin();
+  M5.Display.setRotation(1);
+  M5.Display.setSwapBytes(true);
   sd_begin();
 
   // todo testing
@@ -65,10 +67,12 @@ void setup()
       .norTempPath = "/__tmp_nc1020.fls",
   };
 
-  M5.Display.print("Load ROM...");
+  M5.Display.print("Load ROM...\n");
   wqx::Initialize(rom);
-  M5.Display.print("Load NOR...");
+  M5.Display.print("Load NOR...\n");
   wqx::LoadNC1020();
+  M5.Display.print("\nLoad Completed\n");
+  M5.Display.clearDisplay();
 }
 
 void loop()
@@ -79,25 +83,37 @@ void loop()
 
 void Render()
 {
+  Serial.println("render clear");
   renderer.clearDisplay();
-  unsigned char *buffer = (unsigned char *)renderer.getBuffer();
-  for (int i = 0; i < sizeof(lcd_buf); ++i)
+
+  Serial.println("render copy");
+  for (int i = 0; i < SCREEN_HEIGHT; ++i)
   {
-    for (int j = 0; j < 8; ++j)
+    for (int j = 0; j < SCREEN_WIDTH; ++j)
     {
-      bool pixel = (lcd_buf[i] & (1 << (7 - j))) != 0;
-      memcpy(buffer, (const void *)(pixel ? 1 : 0), sizeof(unsigned char));
+      int byteIndex = (i * (SCREEN_WIDTH / 8)) + (j / 8);
+      int bitPosition = 7 - (j % 8);
+      bool pixelColor = (lcd_buf[byteIndex] >> bitPosition) & 1;
+      renderer.drawPixel(j, i, pixelColor ? 1 : 0);
+      M5.Display.drawPixel(j, i, pixelColor ? TFT_BLACK : TFT_WHITE);
     }
   }
-  renderer.pushRotateZoom(&M5.Display, 0, (float)M5.Display.width() / renderer.width(), (float)M5.Display.height() / renderer.height());
+
+  Serial.println("render push");
+  //renderer.pushRotateZoom(&M5.Display, 0,
+   //                       (float)M5.Display.width() / renderer.width(),
+    //                      (float)M5.Display.height() / renderer.height());
+  M5.Display.display();
 }
 
 void ProcessKeyboard()
 {
-  if (M5Cardputer.BtnA.wasPressed()) {
+  if (M5Cardputer.BtnA.wasPressed())
+  {
     wqx::SetKey(0x0f, true);
   }
-  if (M5Cardputer.BtnA.wasReleased()) {
+  if (M5Cardputer.BtnA.wasReleased())
+  {
     wqx::SetKey(0x0f, false);
   }
   if (M5Cardputer.Keyboard.isChange())
@@ -158,31 +174,36 @@ void RunGame()
   while (loop)
   {
     M5.update();
-    uint32_t tick = millis();
-
-    wqx::RunTimeSlice(FRAME_INTERVAL, false);
-
+    uint64_t tick = millis();
+    Serial.printf("run %ld\n", tick);
+    wqx::RunTimeSlice(FRAME_INTERVAL, true);
+    Serial.printf("keyboard %ld\n", tick);
     ProcessKeyboard();
 
+    Serial.printf("lcd %ld\n", tick);
     if (!wqx::CopyLcdBuffer(lcd_buf))
     {
-      std::cout << "Failed to copy buffer renderer." << std::endl;
+      M5.Display.print("Failed to copy buffer renderer.\n");
     }
+
+    Serial.printf("render %ld\n", tick);
     Render();
     tick = millis() - tick;
-    delay(FRAME_INTERVAL < tick ? 0 : FRAME_INTERVAL - tick);
+    uint64_t delay_mills = FRAME_INTERVAL < tick ? 0 : (FRAME_INTERVAL - tick);
+    Serial.printf("delay %ld\n", delay_mills);
+    delay(delay_mills);
   }
 }
 
 void sd_begin()
 {
   M5.Display.setTextSize(1);
-  M5.Display.print("SDCard Checking...");
+  M5.Display.print("SDCard Checking...\n");
 
   SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
   if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000))
   {
-    M5.Display.print("SDCard Failed");
+    M5.Display.print("SDCard Failed\n");
     while (1)
       ;
   }
@@ -190,7 +211,7 @@ void sd_begin()
 
   if (cardType == CARD_NONE)
   {
-    M5.Display.print("SDCard Failed");
+    M5.Display.print("SDCard Failed\n");
     return;
   }
 

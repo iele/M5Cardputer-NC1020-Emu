@@ -1,4 +1,6 @@
 #include "nc1020.h"
+
+#include <M5Cardputer.h>
 #include <SD.h>
 
 namespace wqx
@@ -90,10 +92,10 @@ namespace wqx
 	static uint8_t rom_volume2[0x100];
 
 	static uint8_t nor_banks[0x20];
-	static uint8_t *bbs_pages[0x10];
+	static uint8_t *bbs_pages[0x10] = {NULL};
 
-	static uint8_t *memmap[8];
-	static nc1020_states_t nc1020_states;
+	static uint8_t *memmap[8] = {NULL};
+	nc1020_states_t nc1020_states;
 
 	static uint32_t &version = nc1020_states.version;
 
@@ -146,33 +148,51 @@ namespace wqx
 	static io_read_func_t io_read[0x40];
 	static io_write_func_t io_write[0x40];
 
-	static uint8_t *cur_bank = NULL;
+	static uint8_t *cur_nor_bank = NULL;
+	static uint8_t *cur_rom_bank = NULL;
+
+	File nor_temp_file;
+	File rom_temp_file;
+
+	uint32_t last_nor_offset = 0xffffffff;
+	uint32_t last_rom_offset = 0xffffffff;
 
 	void readNorBank(uint32_t offset)
 	{
-		if (cur_bank != NULL)
+		if (offset == last_nor_offset)
 		{
-			cur_bank = (uint8_t *)malloc(0x8000);
+			return;
 		}
-		File temp_file = SD.open(nc1020_rom.norTempPath.c_str(), FILE_READ);
-		temp_file.seek(offset);
-		temp_file.read(cur_bank, 0x8000);
-		temp_file.close();
+		if (cur_nor_bank == NULL)
+		{
+			//Serial.printf("malloc cur_bank\n");
+			cur_nor_bank = (uint8_t *)malloc(0x8000);
+		}
+		nor_temp_file.seek(offset);
+		//Serial.printf("read rom %d\n", offset);
+		nor_temp_file.read(cur_nor_bank, 0x8000);
+		last_nor_offset = offset;
 	}
 	void readRomBank(uint32_t offset)
 	{
-		if (cur_bank != NULL)
+		if (offset == last_rom_offset)
 		{
-			cur_bank = (uint8_t *)malloc(0x8000);
+			return;
 		}
-		File temp_file = SD.open(nc1020_rom.romTempPath.c_str(), FILE_READ);
-		temp_file.seek(offset);
-		temp_file.read(cur_bank, 0x8000);
-		temp_file.close();
+		if (cur_rom_bank == NULL)
+		{
+			//Serial.printf("malloc cur_bank\n");
+			cur_rom_bank = (uint8_t *)malloc(0x8000);
+		}
+		rom_temp_file.seek(offset);
+		//Serial.printf("read rom %d\n", offset);
+		rom_temp_file.read(cur_rom_bank, 0x8000);
+		last_rom_offset = offset;
 	}
 
-	void writeNorBank(uint32_t offset, uint8_t* bank)
+	void writeNorBank(uint32_t offset, uint8_t *bank)
 	{
+		//Serial.printf("write cur_bank to %d\n", offset);
 		File temp_file = SD.open(nc1020_rom.norTempPath.c_str(), FILE_WRITE);
 		temp_file.seek(offset);
 		temp_file.write(bank, 0x8000);
@@ -181,28 +201,33 @@ namespace wqx
 
 	uint8_t *GetBank(uint8_t bank_idx)
 	{
+		//Serial.printf("get_bank\n");
 		uint8_t volume_idx = ram_io[0x0D];
 		if (bank_idx < 0x20)
 		{
+			//Serial.printf("get nor %d\n", bank_idx);
 			readNorBank(nor_banks[bank_idx]);
-			return cur_bank;
+			return cur_nor_bank;
 		}
 		else if (bank_idx >= 0x80)
 		{
 			if (volume_idx & 0x01)
 			{
+				//Serial.printf("get rom %d\n", bank_idx);
 				readRomBank(rom_volume1[bank_idx]);
-				return cur_bank;
+				return cur_rom_bank;
 			}
 			else if (volume_idx & 0x02)
 			{
+				//Serial.printf("get rom %d\n", bank_idx);
 				readRomBank(rom_volume2[bank_idx]);
-				return cur_bank;
+				return cur_rom_bank;
 			}
 			else
 			{
+				//Serial.printf("get rom %d\n", bank_idx);
 				readRomBank(rom_volume0[bank_idx]);
-				return cur_bank;
+				return cur_rom_bank;
 			}
 		}
 		return NULL;
@@ -210,27 +235,33 @@ namespace wqx
 
 	void SwitchBank()
 	{
+		//Serial.printf("switch_bank\n");
 		uint8_t bank_idx = ram_io[0x00];
 		uint8_t *bank = GetBank(bank_idx);
+		//Serial.printf("memmap 2\n");
 		if (memmap[2] == NULL)
 			memmap[2] = (uint8_t *)malloc(0x2000);
-		memmove(memmap[2], cur_bank, 0x2000);
+		memcpy(memmap[2], bank, 0x2000);
 
+		//Serial.printf("memmap 3\n");
 		if (memmap[3] == NULL)
 			memmap[3] = (uint8_t *)malloc(0x2000);
-		memmove(memmap[3], cur_bank + 0x2000, 0x2000);
+		memcpy(memmap[3], bank + 0x2000, 0x2000);
 
+		//Serial.printf("memmap 4\n");
 		if (memmap[4] == NULL)
 			memmap[4] = (uint8_t *)malloc(0x2000);
-		memmove(memmap[4], cur_bank + 0x4000, 0x2000);
+		memcpy(memmap[4], bank + 0x4000, 0x2000);
 
+		//Serial.printf("memmap 5\n");
 		if (memmap[5] == NULL)
 			memmap[5] = (uint8_t *)malloc(0x2000);
-		memmove(memmap[5], cur_bank + 0x6000, 0x2000);
+		memcpy(memmap[5], bank + 0x6000, 0x2000);
 	}
 
 	uint8_t *GetVolumm(uint8_t volume_idx)
 	{
+		//Serial.printf("get_volumn\n");
 		if ((volume_idx & 0x03) == 0x01)
 		{
 			return rom_volume1;
@@ -247,32 +278,37 @@ namespace wqx
 
 	void SwitchVolume()
 	{
+		//Serial.printf("switch_volume\n");
 		uint8_t volume_idx = ram_io[0x0D];
 		uint8_t *volume = GetVolumm(volume_idx);
 		for (int i = 0; i < 4; i++)
 		{
 			readRomBank(volume[i]);
+			//Serial.printf("bbs pages %d\n", i * 4);
 			if (bbs_pages[i * 4] == NULL)
 				bbs_pages[i * 4] = (uint8_t *)malloc(0x2000);
-			memmove(bbs_pages[i * 4], cur_bank, 0x2000);
+			memcpy(bbs_pages[i * 4], cur_rom_bank, 0x2000);
 
+			//Serial.printf("bbs pages %d\n", i * 4 + 1);
 			if (bbs_pages[i * 4 + 1] == NULL)
 				bbs_pages[i * 4 + 1] = (uint8_t *)malloc(0x2000);
-			memmove(bbs_pages[i * 4 + 1], cur_bank + 0x2000, 0x2000);
+			memcpy(bbs_pages[i * 4 + 1], cur_rom_bank + 0x2000, 0x2000);
 
+			//Serial.printf("bbs pages %d\n", i * 4 + 2);
 			if (bbs_pages[i * 4 + 2] == NULL)
 				bbs_pages[i * 4 + 2] = (uint8_t *)malloc(0x2000);
-			memmove(bbs_pages[i * 4 + 2], cur_bank + 0x4000, 0x2000);
+			memcpy(bbs_pages[i * 4 + 2], cur_rom_bank + 0x4000, 0x2000);
 
-			if (bbs_pages[i * 4] + 3 == NULL)
+			//Serial.printf("bbs pages %d\n", i * 4 + 3);
+			if (bbs_pages[i * 4 + 3] == NULL)
 				bbs_pages[i * 4 + 3] = (uint8_t *)malloc(0x2000);
-			memmove(bbs_pages[i * 4 + 3], cur_bank + 0x26000, 0x2000);
+			memcpy(bbs_pages[i * 4 + 3], cur_rom_bank + 0x6000, 0x2000);
 		}
 		bbs_pages[1] = ram_page3;
 		readRomBank(volume[0] + 0x2000);
 		if (memmap[7] == NULL)
-				memmap[7] = (uint8_t *)malloc(0x2000);
-		memmove(memmap[7], cur_bank, 0x2000);
+			memmap[7] = (uint8_t *)malloc(0x2000);
+		memcpy(memmap[7], cur_rom_bank, 0x2000);
 
 		uint8_t roa_bbs = ram_io[0x0A];
 		memmap[1] = (roa_bbs & 0x04 ? ram_page2 : ram_page1);
@@ -404,13 +440,13 @@ namespace wqx
 			if (ram_io[0x15] == 0x7F)
 			{
 				ram_io[0x08] = (keypad_matrix[0] |
-												keypad_matrix[1] |
-												keypad_matrix[2] |
-												keypad_matrix[3] |
-												keypad_matrix[4] |
-												keypad_matrix[5] |
-												keypad_matrix[6] |
-												keypad_matrix[7]);
+								keypad_matrix[1] |
+								keypad_matrix[2] |
+								keypad_matrix[3] |
+								keypad_matrix[4] |
+								keypad_matrix[5] |
+								keypad_matrix[6] |
+								keypad_matrix[7]);
 			}
 			break;
 		}
@@ -559,14 +595,14 @@ namespace wqx
 	bool IsCountDown()
 	{
 		if (!(clock_buff[10] & 0x02) ||
-				!(clock_flags & 0x02))
+			!(clock_flags & 0x02))
 		{
 			return false;
 		}
 		return (
-				((clock_buff[7] & 0x80) && !(((clock_buff[7] ^ clock_buff[2])) & 0x1F)) ||
-				((clock_buff[6] & 0x80) && !(((clock_buff[6] ^ clock_buff[1])) & 0x3F)) ||
-				((clock_buff[5] & 0x80) && !(((clock_buff[5] ^ clock_buff[0])) & 0x3F)));
+			((clock_buff[7] & 0x80) && !(((clock_buff[7] ^ clock_buff[2])) & 0x1F)) ||
+			((clock_buff[6] & 0x80) && !(((clock_buff[6] ^ clock_buff[1])) & 0x3F)) ||
+			((clock_buff[5] & 0x80) && !(((clock_buff[5] ^ clock_buff[0])) & 0x3F)));
 	}
 
 	/**
@@ -586,20 +622,33 @@ namespace wqx
 
 	void LoadRom()
 	{
-		SD.remove(nc1020_rom.romTempPath.c_str());
-		uint8_t *src_buff = (uint8_t *)malloc(0x8000);
-		uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
-		File file = SD.open(nc1020_rom.romPath.c_str(), FILE_READ);
-		File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_WRITE, true);
-		while (EOF != file.read(src_buff, sizeof(src_buff) * 0x8000))
+		if (!SD.exists(nc1020_rom.romTempPath.c_str()))
 		{
-			ProcessBinary(dest_buff, src_buff, 0x8000);
-			tempFile.write(dest_buff, sizeof(src_buff) * 0x8000);
+			uint8_t *src_buff = (uint8_t *)malloc(0x8000);
+			uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
+			File file = SD.open(nc1020_rom.romPath.c_str(), FILE_READ);
+			File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_WRITE, true);
+			size_t file_size = file.size();
+			M5.Display.clearDisplay();
+			M5.Display.setCursor(0, 0);
+			M5.Display.printf("rom conv:\n");
+			for (int i = 0; i < file_size / 0x8000; i++)
+			{
+				file.read(src_buff, 0x8000);
+				if (i % 30 == 0)
+				{
+					M5.Display.printf(".");
+				}
+				ProcessBinary(dest_buff, src_buff, 0x8000);
+				tempFile.write(dest_buff, 0x8000);
+				tempFile.flush();
+			}
+			file.close();
+			tempFile.close();
+			free(src_buff);
+			free(dest_buff);
 		}
-		file.close();
-		tempFile.close();
-		free(src_buff);
-		free(dest_buff);
+		rom_temp_file = SD.open(nc1020_rom.romTempPath.c_str(), FILE_READ);
 	}
 
 	void LoadNor()
@@ -609,15 +658,23 @@ namespace wqx
 		uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
 		File file = SD.open(nc1020_rom.norFlashPath.c_str(), FILE_READ);
 		File tempFile = SD.open(nc1020_rom.norTempPath.c_str(), FILE_WRITE, true);
-		while (EOF != file.read(src_buff, sizeof(src_buff) * 0x8000))
+		size_t file_size = file.size();
+		M5.Display.clearDisplay();
+		M5.Display.setCursor(0, 0);
+		M5.Display.printf("nor conv:\n");
+		for (int i = 0; i < file_size / 0x8000; i++)
 		{
+			file.read(src_buff, 0x8000);
+			M5.Display.printf(".");
 			ProcessBinary(dest_buff, src_buff, 0x8000);
-			tempFile.write(dest_buff, sizeof(src_buff) * 0x8000);
+			tempFile.write(dest_buff, 0x8000);
+			tempFile.flush();
 		}
 		file.close();
 		tempFile.close();
 		free(src_buff);
 		free(dest_buff);
+		nor_temp_file = SD.open(nc1020_rom.norTempPath.c_str(), FILE_READ);
 	}
 
 	void SaveNor()
@@ -626,10 +683,13 @@ namespace wqx
 		uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
 		File file = SD.open(nc1020_rom.norTempPath.c_str(), FILE_READ);
 		File tempFile = SD.open(nc1020_rom.norFlashPath.c_str(), FILE_WRITE);
-		while (EOF != file.read(src_buff, sizeof(src_buff) * 0x8000))
+		size_t file_size = file.size();
+		for (int i = 0; i < file_size / 0x8000; i++)
 		{
+			file.read(src_buff, 0x8000);
 			ProcessBinary(dest_buff, src_buff, 0x8000);
-			tempFile.write(dest_buff, sizeof(src_buff) * 0x8000);
+			tempFile.write(dest_buff, 0x8000);
+			tempFile.flush();
 		}
 		file.close();
 		tempFile.close();
@@ -657,8 +717,8 @@ namespace wqx
 			return io_read[addr](addr);
 		}
 		if (((fp_step == 4 && fp_type == 2) ||
-				 (fp_step == 6 && fp_type == 3)) &&
-				(addr >= 0x4000 && addr < 0xC000))
+			 (fp_step == 6 && fp_type == 3)) &&
+			(addr >= 0x4000 && addr < 0xC000))
 		{
 			fp_step = 0;
 			return 0x88;
@@ -703,7 +763,7 @@ namespace wqx
 		}
 
 		readNorBank(nor_banks[bank_idx]);
-		uint8_t *bank = cur_bank;
+		uint8_t *bank = cur_nor_bank;
 
 		if (fp_step == 0)
 		{
@@ -809,8 +869,8 @@ namespace wqx
 			{
 				for (uint32_t i = 0; i < 0x20; i++)
 				{
-					memset(cur_bank, 0xFF, 0x8000);
-					writeNorBank(nor_banks[i], cur_bank);
+					memset(cur_nor_bank, 0xFF, 0x8000);
+					writeNorBank(nor_banks[i], cur_nor_bank);
 				}
 				if (fp_type == 5)
 				{
@@ -951,13 +1011,13 @@ namespace wqx
 	void LoadStates()
 	{
 		ResetStates();
-		FILE *file = fopen(nc1020_rom.statesPath.c_str(), "rb");
+		File file = SD.open(nc1020_rom.statesPath.c_str(), FILE_READ, false);
 		if (file == NULL)
 		{
 			return;
 		}
-		fread(&nc1020_states, 1, sizeof(nc1020_states), file);
-		fclose(file);
+		file.read((uint8_t *)&nc1020_states, sizeof(nc1020_states));
+		file.close();
 		if (version != VERSION)
 		{
 			return;
@@ -967,10 +1027,10 @@ namespace wqx
 
 	void SaveStates()
 	{
-		FILE *file = fopen(nc1020_rom.statesPath.c_str(), "wb");
-		fwrite(&nc1020_states, 1, sizeof(nc1020_states), file);
-		fflush(file);
-		fclose(file);
+		File file = SD.open(nc1020_rom.statesPath.c_str(), FILE_WRITE, true);
+		file.write((uint8_t *)&nc1020_states, sizeof(nc1020_states));
+		file.flush();
+		file.close();
 	}
 
 	void LoadNC1020()
