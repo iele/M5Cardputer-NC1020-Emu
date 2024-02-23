@@ -11,7 +11,7 @@
 #define SD_SPI_MOSI_PIN 14
 #define SD_SPI_CS_PIN 12
 
-#define FRAME_RATE 30
+#define FRAME_RATE 10
 #define FRAME_INTERVAL (1000 / FRAME_RATE)
 
 #define SCREEN_WIDTH 160
@@ -57,6 +57,7 @@ void setup()
   renderer.createPalette();
   renderer.setPaletteColor(0, TFT_BLACK);
   renderer.setPaletteColor(1, TFT_WHITE);
+  renderer.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
 
   wqx::WqxRom rom = {
       .romPath = "/obj_lu.bin",
@@ -83,10 +84,11 @@ void loop()
 
 void Render()
 {
-  Serial.println("render clear");
-  renderer.clearDisplay();
-
-  Serial.println("render copy");
+  if (lcd_buf == NULL)
+  {
+    return;
+  }
+  // Serial.println("render copy");
   for (int i = 0; i < SCREEN_HEIGHT; ++i)
   {
     for (int j = 0; j < SCREEN_WIDTH; ++j)
@@ -94,16 +96,16 @@ void Render()
       int byteIndex = (i * (SCREEN_WIDTH / 8)) + (j / 8);
       int bitPosition = 7 - (j % 8);
       bool pixelColor = (lcd_buf[byteIndex] >> bitPosition) & 1;
-      renderer.drawPixel(j, i, pixelColor ? 1 : 0);
-      M5.Display.drawPixel(j, i, pixelColor ? TFT_BLACK : TFT_WHITE);
+      renderer.drawPixel(j, i, pixelColor ? TFT_BLACK : TFT_WHITE);
     }
   }
+  renderer.display();
 
-  Serial.println("render push");
-  //renderer.pushRotateZoom(&M5.Display, 0,
-   //                       (float)M5.Display.width() / renderer.width(),
-    //                      (float)M5.Display.height() / renderer.height());
-  M5.Display.display();
+  // Serial.println("render push");
+  renderer.pushRotateZoomWithAA(&M5.Display, M5.Display.width() / 2,
+                                M5.Display.height() / 2, 0,
+                                (float)M5.Display.width() / (float)SCREEN_WIDTH, (float)M5.Display.height() / (float)SCREEN_HEIGHT);
+  // M5.Display.display();
 }
 
 void ProcessKeyboard()
@@ -175,22 +177,24 @@ void RunGame()
   {
     M5.update();
     uint64_t tick = millis();
-    Serial.printf("run %ld\n", tick);
-    wqx::RunTimeSlice(FRAME_INTERVAL, true);
-    Serial.printf("keyboard %ld\n", tick);
+    // Serial.printf("run %ld\n", tick);
+    wqx::RunTimeSlice(FRAME_INTERVAL, false);
+    // Serial.printf("keyboard %ld\n", tick);
     ProcessKeyboard();
 
-    Serial.printf("lcd %ld\n", tick);
+    // Serial.printf("lcd %ld\n", tick);
     if (!wqx::CopyLcdBuffer(lcd_buf))
     {
-      M5.Display.print("Failed to copy buffer renderer.\n");
+      M5.Display.drawString("Failed to copy buffer renderer.\n", 0, 0);
+    }
+    else
+    {
+      Render();
     }
 
-    Serial.printf("render %ld\n", tick);
-    Render();
     tick = millis() - tick;
     uint64_t delay_mills = FRAME_INTERVAL < tick ? 0 : (FRAME_INTERVAL - tick);
-    Serial.printf("delay %ld\n", delay_mills);
+    // Serial.printf("delay %ld\n", delay_mills);
     delay(delay_mills);
   }
 }
