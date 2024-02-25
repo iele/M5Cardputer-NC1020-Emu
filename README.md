@@ -1,6 +1,6 @@
 # NC1020 for M5Cardputer
 
-It is still ongoing, and I have no idea if it can work properly at the moment, because it is the Spring Festival and I am not at home, I temporarily have no equipment on hand.
+Currently working on my M5Cardputer, but it will be too slow cause NO PSRAM in M5StampS3, 520K RAM space is mostly used when running this emulator and no more space for caching.
 
 Original ----------------------------------------------------------
 
