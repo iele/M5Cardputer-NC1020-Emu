@@ -68,8 +68,6 @@ void setup()
       .romPath = "/obj_lu.bin",
       .norFlashPath = "/nc1020.fls",
       .statesPath = "/nc1020.sts",
-
-      .romTempPath = "/__tmp_obj_lu.bin",
       .norTempPath = "/__tmp_nc1020.fls",
   };
 

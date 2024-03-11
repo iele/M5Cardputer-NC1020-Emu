@@ -3,12 +3,14 @@
 #include <M5Cardputer.h>
 #include <SD.h>
 
+#include "lru.h"
+
 namespace wqx
 {
 	using std::string;
 
 	// cpu cycles per second (cpu freq).
-	const size_t CYCLES_SECOND = 5120000;
+	const size_t CYCLES_SECOND = 5120000 * 2;
 	const size_t TIMER0_FREQ = 2;
 	const size_t TIMER1_FREQ = 0x100;
 	// cpu cycles per timer0 period (1/2 s).
@@ -22,7 +24,8 @@ namespace wqx
 
 	static const size_t ROM_SIZE = 0x8000 * 0x300;
 	static const size_t NOR_SIZE = 0x8000 * 0x20;
-
+	static size_t slice_count = 0;
+	static double instructions_per_second = 0;
 	static const uint16_t IO_LIMIT = 0x40;
 #define IO_API
 	typedef uint8_t(IO_API *io_read_func_t)(uint8_t);
@@ -84,9 +87,20 @@ namespace wqx
 
 	static WqxRom nc1020_rom;
 
-	static uint32_t rom_volume0[0x100];
-	static uint32_t rom_volume1[0x100];
-	static uint32_t rom_volume2[0x100];
+	// rom_buff
+	static uint8_t my_rom_buff[0x8000];
+	static uint8_t my_rom_buff0;
+	static uint8_t rom_buff[1];
+
+	// nor_buff
+	static uint8_t my_nor_buff[0x8000];
+	static uint8_t my_nor_buff0;
+	static uint8_t nor_buff[1];
+
+	static uint8_t *rom_volume0[0x100];
+	static uint8_t *rom_volume1[0x100];
+	static uint8_t *rom_volume2[0x100];
+
 	static uint32_t nor_banks[0x20];
 
 	static uint8_t *bbs_pages[0x10];
@@ -111,7 +125,7 @@ namespace wqx
 	static uint8_t *ram_page1 = ram_buff + 0x2000;
 	static uint8_t *ram_page2 = ram_buff + 0x4000;
 	static uint8_t *ram_page3 = ram_buff + 0x6000;
-
+	static lru_t lru;
 	static uint8_t *clock_buff = nc1020_states.clock_data;
 	static uint8_t &clock_flags = nc1020_states.clock_flags;
 
@@ -146,24 +160,13 @@ namespace wqx
 	static io_write_func_t io_write[0x40];
 
 	static uint8_t last_nor_bank = 0xFFFFFFFF;
-	static uint8_t last_rom_bank = 0xFFFFFFFF;
-	static uint8_t last_rom_volume = 0xFFFFFFFF;
 	static uint8_t *temp_switch_nor;
-	static uint8_t *temp_switch_rom;
-	static uint8_t *temp_switch_volume;
-
 	static File nor_temp_file;
-	static File rom_temp_file;
 
-	void readNorBank(uint32_t offset, uint8_t *dest, size_t rsize)
+	void readNorBank(uint32_t offset, uint8_t *dest)
 	{
 		nor_temp_file.seek(offset);
-		nor_temp_file.read(dest, rsize);
-	}
-	void readRomBank(uint32_t offset, uint8_t *dest, size_t rsize)
-	{
-		rom_temp_file.seek(offset);
-		rom_temp_file.read(dest, rsize);
+		nor_temp_file.read(dest, 0x8000);
 	}
 
 	void writeNorBank(uint32_t offset, uint8_t *bank)
@@ -175,41 +178,32 @@ namespace wqx
 		temp_file.close();
 	}
 
-	uint8_t *GetBank(uint8_t bank_idx, size_t rsize)
+	uint8_t *GetBank(uint8_t bank_idx)
 	{
 		uint8_t volume_idx = ram_io[0x0D];
 		if (bank_idx < 0x20)
 		{
 			if (bank_idx != last_nor_bank)
 			{
-				readNorBank(nor_banks[bank_idx], temp_switch_nor, rsize);
+				readNorBank(nor_banks[bank_idx], temp_switch_nor);
 				last_nor_bank = bank_idx;
 			}
 			return temp_switch_nor;
 		}
 		else if (bank_idx >= 0x80)
 		{
-			if (bank_idx != last_rom_bank || volume_idx != last_rom_volume)
+			if (volume_idx & 0x01)
 			{
-				if (volume_idx & 0x01)
-				{
-					// Serial.printf("get rom %d\n", bank_idx);
-					readRomBank(rom_volume1[bank_idx], temp_switch_rom, rsize);
-				}
-				else if (volume_idx & 0x02)
-				{
-					// Serial.printf("get rom %d\n", bank_idx);
-					readRomBank(rom_volume2[bank_idx], temp_switch_rom, rsize);
-				}
-				else
-				{
-					// Serial.printf("get rom %d\n", bank_idx);
-					readRomBank(rom_volume0[bank_idx], temp_switch_rom, rsize);
-				}
-				last_rom_bank = bank_idx;
-				last_rom_volume = volume_idx;
+				return rom_volume1[bank_idx];
 			}
-			return temp_switch_rom;
+			else if (volume_idx & 0x02)
+			{
+				return rom_volume2[bank_idx];
+			}
+			else
+			{
+				return rom_volume0[bank_idx];
+			}
 		}
 		return NULL;
 	}
@@ -217,26 +211,18 @@ namespace wqx
 	void SwitchBank()
 	{
 		uint8_t bank_idx = ram_io[0x00];
-		uint8_t *temp_switch_bank = GetBank(bank_idx, 0x8000);
-
-		Serial.printf("switch_bank %d\n", bank_idx);
-
-		// Serial.printf("memmap 2\n");
-		memmap[2] = temp_switch_bank;
-
-		// Serial.printf("memmap 3\n");
-		memmap[3] = temp_switch_bank + 0x2000;
-
-		// Serial.printf("memmap 4\n");
-		memmap[4] = temp_switch_bank + 0x4000;
-
-		// Serial.printf("memmap 5\n");
-		memmap[5] = temp_switch_bank + 0x6000;
+		uint8_t *bank = GetBank(bank_idx);
+		//        LOGE("idx=%d, %p, nor_offset=0x%02x, rom_offset=0x%02x, nor_buff=%p->%p", bank_idx, bank,
+		//             bank - nor_buff, bank - rom_buff,
+		//             nor_buff, nor_buff + NOR_SIZE);
+		memmap[2] = bank;
+		memmap[3] = bank + 0x2000;
+		memmap[4] = bank + 0x4000;
+		memmap[5] = bank + 0x6000;
 	}
 
-	uint32_t *GetVolumm(uint8_t volume_idx)
+	uint8_t **GetVolume(uint8_t volume_idx)
 	{
-		// Serial.printf("get_volumn\n");
 		if ((volume_idx & 0x03) == 0x01)
 		{
 			return rom_volume1;
@@ -254,20 +240,16 @@ namespace wqx
 	void SwitchVolume()
 	{
 		uint8_t volume_idx = ram_io[0x0D];
-		Serial.printf("switch_volume %d\n", volume_idx);
-		uint32_t *volume = GetVolumm(volume_idx);
+		uint8_t **volume = GetVolume(volume_idx);
 		for (int i = 0; i < 4; i++)
 		{
-			readRomBank(volume[i], temp_switch_volume + i * 0x8000, 0x8000);
-			bbs_pages[i * 4] = temp_switch_volume + i * 0x8000;
-			bbs_pages[i * 4 + 1] = temp_switch_volume + i * 0x8000 + 0x2000;
-			bbs_pages[i * 4 + 2] = temp_switch_volume + i * 0x8000 + 0x4000;
-			bbs_pages[i * 4 + 3] = temp_switch_volume + i * 0x8000 + 0x6000;
+			bbs_pages[i * 4] = volume[i];
+			bbs_pages[i * 4 + 1] = volume[i] + 0x2000;
+			bbs_pages[i * 4 + 2] = volume[i] + 0x4000;
+			bbs_pages[i * 4 + 3] = volume[i] + 0x6000;
 		}
 		bbs_pages[1] = ram_page3;
-
-		readRomBank(volume[0] + 0x2000, memmap[7], 0x2000);
-
+		memmap[7] = volume[0] + 0x2000;
 		uint8_t roa_bbs = ram_io[0x0A];
 		memmap[1] = (roa_bbs & 0x04 ? ram_page2 : ram_page1);
 		memmap[6] = bbs_pages[roa_bbs & 0x0F];
@@ -398,13 +380,13 @@ namespace wqx
 			if (ram_io[0x15] == 0x7F)
 			{
 				ram_io[0x08] = (keypad_matrix[0] |
-								keypad_matrix[1] |
-								keypad_matrix[2] |
-								keypad_matrix[3] |
-								keypad_matrix[4] |
-								keypad_matrix[5] |
-								keypad_matrix[6] |
-								keypad_matrix[7]);
+												keypad_matrix[1] |
+												keypad_matrix[2] |
+												keypad_matrix[3] |
+												keypad_matrix[4] |
+												keypad_matrix[5] |
+												keypad_matrix[6] |
+												keypad_matrix[7]);
 			}
 			break;
 		}
@@ -553,14 +535,14 @@ namespace wqx
 	bool IsCountDown()
 	{
 		if (!(clock_buff[10] & 0x02) ||
-			!(clock_flags & 0x02))
+				!(clock_flags & 0x02))
 		{
 			return false;
 		}
 		return (
-			((clock_buff[7] & 0x80) && !(((clock_buff[7] ^ clock_buff[2])) & 0x1F)) ||
-			((clock_buff[6] & 0x80) && !(((clock_buff[6] ^ clock_buff[1])) & 0x3F)) ||
-			((clock_buff[5] & 0x80) && !(((clock_buff[5] ^ clock_buff[0])) & 0x3F)));
+				((clock_buff[7] & 0x80) && !(((clock_buff[7] ^ clock_buff[2])) & 0x1F)) ||
+				((clock_buff[6] & 0x80) && !(((clock_buff[6] ^ clock_buff[1])) & 0x3F)) ||
+				((clock_buff[5] & 0x80) && !(((clock_buff[5] ^ clock_buff[0])) & 0x3F)));
 	}
 
 	/**
@@ -578,52 +560,111 @@ namespace wqx
 		}
 	}
 
+	// TODO
 	void LoadRom()
 	{
-		bool need_reload = false;
-		if (SD.exists(nc1020_rom.romTempPath.c_str()))
+	}
+
+	size_t last_bank_idx = -1;
+
+	void readSDFileToBuffer(uint8_t *dest, File file, size_t seek_pos, size_t max_len)
+	{
+		Serial.printf("readSDFileToBuffer(), file=%p\n", file);
+		size_t len = 0;
+		uint32_t start = millis();
+		uint32_t end = start;
+		if (file)
 		{
-			File file = SD.open(nc1020_rom.romPath.c_str(), FILE_READ);
-			File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_READ);
-			if (file.size() != tempFile.size())
+			len = file.size();
+			size_t flen = len;
+			len = len > max_len ? max_len : len;
+			start = millis();
+			size_t bytesRead = 0;
+			if (seek_pos > 0)
 			{
-				SD.remove(nc1020_rom.romTempPath.c_str());
-				need_reload = true;
+				file.seek(seek_pos);
 			}
+			while (len)
+			{
+				size_t toRead = len;
+				if (toRead > 512)
+				{
+					toRead = 512;
+				}
+				file.read(dest + bytesRead, toRead);
+				bytesRead += 512;
+				len -= toRead;
+			}
+			end = millis() - start;
+			Serial.printf("%u bytes read for %u ms\n", bytesRead, end);
 			file.close();
-			tempFile.close();
 		}
 		else
 		{
-			need_reload = true;
+			Serial.println("Failed to open file for reading....");
 		}
-		if (need_reload)
+	}
+
+	void read_bank_from_rom_file(size_t bank_idx)
+	{
+		File romFile = SD.open("/obj_lu.bin");
+		readSDFileToBuffer(my_rom_buff, romFile, bank_idx * 0x8000, 0x8000);
+		romFile.close();
+		Serial.printf("%d: 0x%02X,0x%02X,0x%02X,0x%02X,\n", bank_idx,
+									my_rom_buff[0],
+									my_rom_buff[1],
+									my_rom_buff[2],
+									my_rom_buff[3]);
+	}
+
+	void read_bank_from_nor_file(size_t bank_idx)
+	{
+		File norFile = SD.open("/nc1020.fls");
+		readSDFileToBuffer(my_nor_buff, norFile, bank_idx * 0x8000, 0x8000);
+		norFile.close();
+		Serial.printf("%d: 0x%02X,0x%02X,0x%02X,0x%02X,\n", bank_idx,
+									my_nor_buff[0],
+									my_nor_buff[1],
+									my_nor_buff[2],
+									my_nor_buff[3]);
+	}
+
+	uint8_t *peekROMByte(size_t pos)
+	{
+		auto bank_idx = pos / 0x8000;
+		auto addr = pos % 0x8000;
+
+		if (addr >= 0x4000)
 		{
-			uint8_t *src_buff = (uint8_t *)malloc(0x8000);
-			uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
-			File file = SD.open(nc1020_rom.romPath.c_str(), FILE_READ);
-			File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_WRITE, true);
-			size_t file_size = file.size();
-			M5.Display.clearDisplay();
-			M5.Display.setCursor(0, 0);
-			M5.Display.printf("rom conv:\n");
-			for (int i = 0; i < file_size / 0x8000; i++)
-			{
-				file.read(src_buff, 0x8000);
-				if (i % 30 == 0)
-				{
-					M5.Display.printf(".");
-				}
-				ProcessBinary(dest_buff, src_buff, 0x8000);
-				tempFile.write(dest_buff, 0x8000);
-				tempFile.flush();
-			}
-			file.close();
-			tempFile.close();
-			free(src_buff);
-			free(dest_buff);
+			addr -= 0x4000;
 		}
-		rom_temp_file = SD.open(nc1020_rom.romTempPath.c_str(), FILE_READ);
+		else
+		{
+			addr += 0x4000;
+		}
+		value_type *value_ptr;
+		bool ok = get_value(&lru, bank_idx, &value_ptr);
+		if (!ok)
+		{
+			read_bank_from_rom_file(bank_idx);
+			// sleep(1);
+			insert_value_to_lru(&lru, bank_idx, my_rom_buff);
+			if (last_bank_idx != bank_idx)
+			{
+				// Serial.printf("peek() miss rom cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
+			}
+			my_rom_buff0 = my_rom_buff[addr];
+		}
+		else
+		{
+			my_rom_buff0 = (*value_ptr)[addr];
+			if (last_bank_idx != bank_idx)
+			{
+				// Serial.printf("peek() got rom cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
+			}
+		}
+		last_bank_idx = bank_idx;
+		return &my_rom_buff0;
 	}
 
 	void LoadNor()
@@ -673,31 +714,46 @@ namespace wqx
 		SD.remove(nc1020_rom.norTempPath.c_str());
 	}
 
-	inline uint8_t &Peek(uint8_t addr)
+	// TODO(eggfly): inline
+	inline __attribute__((always_inline)) uint8_t &Peek(uint16_t addr)
 	{
-		// Serial.printf("peek %d\n", addr);
+		uint8_t *ptr = memmap[addr / 0x2000];
+		if (ptr >= rom_buff && ptr < rom_buff + ROM_SIZE)
+		{
+			size_t offset = ptr - rom_buff;
+			auto pos = offset + (addr % 0x2000);
+			return *peekROMByte(pos);
+			// return my_rom_buff[pos];
+		}
+		else if (ptr >= nor_buff && ptr < nor_buff + NOR_SIZE)
+		{
+			return memmap[addr / 0x2000][addr % 0x2000];
+		}
+		else if (ptr >= nc1020_states.ram &&
+						 ptr < nc1020_states.ram + sizeof(nc1020_states.ram))
+		{
+			return ptr[addr % 0x2000];
+		}
+		else
+		{
+			return ptr[addr % 0x2000];
+		}
+	}
 
-		return ram_buff[addr];
-	}
-	inline uint8_t &Peek(uint16_t addr)
-	{
-		// Serial.printf("peek %d\n", addr);
-		return memmap[addr / 0x2000][addr % 0x2000];
-	}
-	inline uint16_t PeekW(uint16_t addr)
+	inline __attribute__((always_inline)) uint16_t PeekW(uint16_t addr)
 	{
 		return Peek(addr) | (Peek((uint16_t)(addr + 1)) << 8);
 	}
-	inline uint8_t Load(uint16_t addr)
+
+	inline __attribute__((always_inline)) uint8_t Load(uint16_t addr)
 	{
-		// Serial.printf("load %d\n", addr);
 		if (addr < IO_LIMIT)
 		{
 			return io_read[addr](addr);
 		}
 		if (((fp_step == 4 && fp_type == 2) ||
-			 (fp_step == 6 && fp_type == 3)) &&
-			(addr >= 0x4000 && addr < 0xC000))
+				 (fp_step == 6 && fp_type == 3)) &&
+				(addr >= 0x4000 && addr < 0xC000))
 		{
 			fp_step = 0;
 			return 0x88;
@@ -709,26 +765,34 @@ namespace wqx
 		}
 		return Peek(addr);
 	}
-	inline void Store(uint16_t addr, uint8_t value)
-	{
-		// Serial.printf("store %d %d\n", addr, value);
 
+	inline __attribute__((always_inline)) bool flash_nor_store(uint8_t *ptr, uint8_t value)
+	{
+		if (ptr >= nor_buff && ptr < nor_buff + NOR_SIZE)
+		{
+			auto offset = ptr - nor_buff;
+			nor_buff[offset] &= value;
+			// *ptr &= value;
+			return true;
+		}
+		return false;
+	}
+
+	inline __attribute__((always_inline)) void Store(uint16_t addr, uint8_t value)
+	{
 		if (addr < IO_LIMIT)
 		{
-			// Serial.printf("store io %d %d\n", addr, value);
 			io_write[addr](addr, value);
 			return;
 		}
 		if (addr < 0x4000)
 		{
-			// Serial.printf("store ram %d %d\n", addr, value);
 			Peek(addr) = value;
 			return;
 		}
 		uint8_t *page = memmap[addr >> 13];
 		if (page == ram_page2 || page == ram_page3)
 		{
-			// Serial.printf("store ram page %d %d\n", addr, value);
 			page[addr & 0x1FFF] = value;
 			return;
 		}
@@ -747,7 +811,7 @@ namespace wqx
 		}
 
 		uint8_t *bank = (uint8_t *)malloc(0x8000);
-		readNorBank(nor_banks[bank_idx], bank, 0x8000);
+		readNorBank(nor_banks[bank_idx], bank);
 
 		if (fp_step == 0)
 		{
@@ -809,15 +873,25 @@ namespace wqx
 			{
 				if (value == 0xF0)
 				{
-					bank[0x4000] = fp_bak1;
-					bank[0x4001] = fp_bak2;
+					uint8_t *ptr = bank + 0x4000;
+					if (ptr >= nor_buff && ptr < nor_buff + NOR_SIZE)
+					{
+						auto offset = ptr - nor_buff;
+						nor_buff[offset] = fp_bak1;
+						nor_buff[offset + 1] = fp_bak2;
+					}
+					else
+					{
+						abort();
+					}
 					fp_step = 0;
 					goto free;
 				}
 			}
 			else if (fp_type == 2)
 			{
-				bank[addr - 0x4000] &= value;
+				uint8_t *ptr = bank + addr - 0x4000;
+
 				fp_step = 4;
 				goto free;
 			}
@@ -851,7 +925,7 @@ namespace wqx
 		{
 			if (addr == 0x5555 && value == 0x10)
 			{
-				for (uint32_t i = 0; i < 0x20; i++)
+				for (size_t i = 0; i < 0x20; i++)
 				{
 					memset(bank, 0xFF, 0x8000);
 					writeNorBank(nor_banks[i], bank);
@@ -889,25 +963,28 @@ namespace wqx
 			fp_step = 0;
 			goto free;
 		}
-    printf("error occurs when operate in flash!");
+		printf("error occurs when operate in flash!");
 	free:
 		free(bank);
 	}
 
 	void Initialize(WqxRom rom)
 	{
-		nc1020_rom = rom;
-		for (uint32_t i = 0; i < 0x100; i++)
+		// 64 * 0x8000
+		init_lru(&lru, 4);
+		print_lru(&lru);
+		print_lru(&lru);
+		for (size_t i = 0; i < 0x100; i++)
 		{
-			rom_volume0[i] = (0x8000 * i);
-			rom_volume1[i] = (0x8000 * (0x100 + i));
-			rom_volume1[i] = (0x8000 * (0x200 + i));
+			rom_volume0[i] = rom_buff + (0x8000 * i);
+			rom_volume1[i] = rom_buff + (0x8000 * (0x100 + i));
+			rom_volume2[i] = rom_buff + (0x8000 * (0x200 + i));
 		}
-		for (uint32_t i = 0; i < 0x20; i++)
+		for (size_t i = 0; i < 0x20; i++)
 		{
 			nor_banks[i] = (0x8000 * i);
 		}
-		for (uint32_t i = 0; i < 0x40; i++)
+		for (size_t i = 0; i < 0x40; i++)
 		{
 			io_read[i] = ReadXX;
 			io_write[i] = WriteXX;
@@ -928,29 +1005,13 @@ namespace wqx
 		io_write[0x3F] = Write3F;
 
 		LoadRom();
-		// #ifdef DEBUG
-		//	FILE* file = fopen((nc1020_dir + "/wqxsimlogs.bin").c_str(), "rb");
-		//	fseek(file, 0L, SEEK_END);
-		//	size_t file_size = ftell(file);
-		//	size_t insts_count = (file_size - 8) / 8;
-		//	debug_logs.insts_count = insts_count;
-		//	debug_logs.logs = (log_rec_t*)malloc(insts_count * 8);
-		//	fseek(file, 0L, SEEK_SET);
-		//	fread(&debug_logs.insts_start, 4, 1, file);
-		//	fseek(file, 4L, SEEK_SET);
-		//	fread(&debug_logs.peek_addr, 4, 1, file);
-		//	fseek(file, 8L, SEEK_SET);
-		//	fread(debug_logs.logs, 8, insts_count, file);
-		//	fclose(file);
-		// #endif
 	}
 
 	void ResetStates()
 	{
 		version = VERSION;
-		temp_switch_rom = (uint8_t *)malloc(0x8000);
+
 		temp_switch_nor = (uint8_t *)malloc(0x8000);
-		temp_switch_volume = (uint8_t *)malloc(4 * 0x8000);
 		memmap[7] = (uint8_t *)malloc(0x2000);
 
 		memset(ram_buff, 0, 0x8000);
@@ -986,11 +1047,6 @@ namespace wqx
 		reg_pc = PeekW(RESET_VEC);
 		timer0_cycles = CYCLES_TIMER0;
 		timer1_cycles = CYCLES_TIMER1;
-
-		// #ifdef DEBUG
-		//	executed_insts = 0;
-		//	debug_done = false;
-		// #endif
 	}
 
 	void Reset()
@@ -1124,51 +1180,6 @@ namespace wqx
 
 		while (cycles < end_cycles)
 		{
-			// Serial.printf("cycle %d pc %d a %d ps %d x %d y %d sp %d\n", cycles, reg_pc, reg_a, reg_ps, reg_x, reg_y, reg_sp);
-			// #ifdef DEBUG
-			//		if (executed_insts == 2792170) {
-			//			printf("debug start!\n");
-			//		}
-			//		if (executed_insts >= debug_logs.insts_start &&
-			//			executed_insts < debug_logs.insts_start + debug_logs.insts_count) {
-			//			log_rec_t& log = debug_logs.logs[executed_insts - debug_logs.insts_start];
-			//			string debug_info;
-			//			if (log.reg_pc != reg_pc) {
-			//				debug_info += " pc ";
-			//			}
-			//			if (log.reg_a != reg_a) {
-			//				debug_info += " a ";
-			//			}
-			//			if (log.reg_ps != reg_ps) {
-			//				debug_info += " ps ";
-			//			}
-			//			if (log.reg_x != reg_x) {
-			//				debug_info += " x ";
-			//			}
-			//			if (log.reg_y != reg_y) {
-			//				debug_info += " y ";
-			//			}
-			//			if (log.reg_sp != reg_sp) {
-			//				debug_info += " sp ";
-			//			}
-			//			if (debug_logs.peek_addr != -1) {
-			//				if (log.peeked != Peek((uint16_t)debug_logs.peek_addr)) {
-			//					debug_info += " mem ";
-			//				}
-			//			} else {
-			//				if (log.peeked != Peek(reg_pc)) {
-			//					debug_info += " op ";
-			//				}
-			//			}
-			//			if (debug_info.length()) {
-			//				printf("%d: %s\n", executed_insts, debug_info.c_str());
-			//				exit(-1);
-			//			}
-			//		}
-			//		if (executed_insts >= debug_logs.insts_start + debug_logs.insts_count) {
-			//			printf("ok\n");
-			//		}
-			// #endif
 			switch (Peek(reg_pc++))
 			{
 			case 0x00:

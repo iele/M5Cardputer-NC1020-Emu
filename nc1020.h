@@ -8,7 +8,6 @@ namespace wqx
         std::string romPath;
         std::string norFlashPath;
         std::string statesPath;
-        std::string romTempPath;
         std::string norTempPath;
     };
     typedef struct WqxRom WqxRom;
