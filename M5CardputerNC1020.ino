@@ -69,6 +69,7 @@ void setup()
       .norFlashPath = "/nc1020.fls",
       .statesPath = "/nc1020.sts",
       .norTempPath = "/__tmp_nc1020.fls",
+      .romTempPath = "/__tmp_obj_lu.bin",
   };
 
   M5Cardputer.Display.print("Load ROM...\n");

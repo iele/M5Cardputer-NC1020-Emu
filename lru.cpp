@@ -157,7 +157,7 @@ unsigned int hash_func(key_type key) {
 
 // 初始化LRU结构体
 void init_lru(lru_t *lru, int capacity) {
-    init_hash_table(&lru->ht, 2, hash_func); // 初始化哈希表大小为100
+    init_hash_table(&lru->ht, 4, hash_func); // 初始化哈希表大小为100
     lru->head = NULL;
     lru->tail = NULL;
     lru->capacity = capacity;

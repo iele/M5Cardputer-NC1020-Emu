@@ -88,7 +88,7 @@ namespace wqx
 	static WqxRom nc1020_rom;
 
 	// rom_buff
-	static uint8_t my_rom_buff[0x8000];
+	static uint8_t my_rom_buff[0x200];
 	static uint8_t my_rom_buff0;
 	static uint8_t rom_buff[1];
 
@@ -562,9 +562,51 @@ namespace wqx
 
 	// TODO
 	void LoadRom()
-	{
-	}
-
+  {
+    bool need_reload = false;
+    if (SD.exists(nc1020_rom.romTempPath.c_str()))
+    {
+      File file = SD.open(nc1020_rom.romPath.c_str(), FILE_READ);
+      File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_READ);
+      if (file.size() != tempFile.size())
+      {
+        SD.remove(nc1020_rom.romTempPath.c_str());
+        need_reload = true;
+      }
+      file.close();
+      tempFile.close();
+    }
+    else
+    {
+      need_reload = true;
+    }
+    if (need_reload)
+    {
+      uint8_t *src_buff = (uint8_t *)malloc(0x8000);
+      uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
+      File file = SD.open(nc1020_rom.romPath.c_str(), FILE_READ);
+      File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_WRITE, true);
+      size_t file_size = file.size();
+      M5.Display.clearDisplay();
+      M5.Display.setCursor(0, 0);
+      M5.Display.printf("rom conv:\n");
+      for (int i = 0; i < file_size / 0x8000; i++)
+      {
+        file.read(src_buff, 0x8000);
+        if (i % 30 == 0)
+        {
+          M5.Display.printf(".");
+        }
+        ProcessBinary(dest_buff, src_buff, 0x8000);
+        tempFile.write(dest_buff, 0x8000);
+        tempFile.flush();
+      }
+      file.close();
+      tempFile.close();
+      free(src_buff);
+      free(dest_buff);
+    }
+  }
 	size_t last_bank_idx = -1;
 
 	void readSDFileToBuffer(uint8_t *dest, File file, size_t seek_pos, size_t max_len)
@@ -607,8 +649,8 @@ namespace wqx
 
 	void read_bank_from_rom_file(size_t bank_idx)
 	{
-		File romFile = SD.open("/obj_lu.bin");
-		readSDFileToBuffer(my_rom_buff, romFile, bank_idx * 0x8000, 0x8000);
+		File romFile = SD.open("/__tmp_obj_lu.bin");
+		readSDFileToBuffer(my_rom_buff, romFile, bank_idx * 0x200, 0x200);
 		romFile.close();
 		Serial.printf("%d: 0x%02X,0x%02X,0x%02X,0x%02X,\n", bank_idx,
 									my_rom_buff[0],
@@ -631,17 +673,9 @@ namespace wqx
 
 	uint8_t *peekROMByte(size_t pos)
 	{
-		auto bank_idx = pos / 0x8000;
-		auto addr = pos % 0x8000;
+		auto bank_idx = pos / 0x200;
+		auto addr = pos % 0x200;
 
-		if (addr >= 0x4000)
-		{
-			addr -= 0x4000;
-		}
-		else
-		{
-			addr += 0x4000;
-		}
 		value_type *value_ptr;
 		bool ok = get_value(&lru, bank_idx, &value_ptr);
 		if (!ok)
@@ -651,7 +685,7 @@ namespace wqx
 			insert_value_to_lru(&lru, bank_idx, my_rom_buff);
 			if (last_bank_idx != bank_idx)
 			{
-				// Serial.printf("peek() miss rom cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
+				Serial.printf("peek() miss rom cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
 			}
 			my_rom_buff0 = my_rom_buff[addr];
 		}
@@ -660,7 +694,7 @@ namespace wqx
 			my_rom_buff0 = (*value_ptr)[addr];
 			if (last_bank_idx != bank_idx)
 			{
-				// Serial.printf("peek() got rom cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
+				Serial.printf("peek() got rom cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
 			}
 		}
 		last_bank_idx = bank_idx;
@@ -675,6 +709,7 @@ namespace wqx
 		File file = SD.open(nc1020_rom.norFlashPath.c_str(), FILE_READ);
 		File tempFile = SD.open(nc1020_rom.norTempPath.c_str(), FILE_WRITE, true);
 		size_t file_size = file.size();
+   Serial.printf("%d\n", file_size);
 		M5.Display.clearDisplay();
 		M5.Display.setCursor(0, 0);
 		M5.Display.printf("nor conv:\n");
@@ -970,9 +1005,9 @@ namespace wqx
 
 	void Initialize(WqxRom rom)
 	{
+    nc1020_rom = rom;
 		// 64 * 0x8000
-		init_lru(&lru, 4);
-		print_lru(&lru);
+		init_lru(&lru, 20);
 		print_lru(&lru);
 		for (size_t i = 0; i < 0x100; i++)
 		{
