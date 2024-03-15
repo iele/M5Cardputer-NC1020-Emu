@@ -86,9 +86,15 @@ namespace wqx
 
 	static WqxRom nc1020_rom;
 
-	static uint32_t rom_volume0[0x100];
-	static uint32_t rom_volume1[0x100];
-	static uint32_t rom_volume2[0x100];
+	// eggfly add
+	static uint8_t my_rom_buff[0x100];
+	static uint8_t my_rom_buff0;
+	static uint8_t rom_buff[1];
+
+	static uint8_t *rom_volume0[0x100];
+	static uint8_t *rom_volume1[0x100];
+	static uint8_t *rom_volume2[0x100];
+
 	static uint32_t nor_banks[0x20];
 
 	static uint8_t *bbs_pages[0x10];
@@ -150,12 +156,7 @@ namespace wqx
 	static io_write_func_t io_write[0x40];
 
 	static uint8_t last_nor_bank = 0xFFFFFFFF;
-	static uint8_t last_rom_bank = 0xFFFFFFFF;
-	static uint8_t last_rom_volume = 0xFFFFFFFF;
 	static uint8_t *temp_switch_nor;
-	static uint8_t *temp_switch_rom;
-	static uint8_t buff_switch_rom[0x8000];
-	static uint8_t *temp_switch_volume;
 
 	static File nor_temp_file;
 	static File rom_temp_file;
@@ -164,23 +165,6 @@ namespace wqx
 	{
 		nor_temp_file.seek(offset);
 		nor_temp_file.read(dest, rsize);
-	}
-	void readRomBank(uint32_t offset, uint8_t *dest, size_t rsize)
-	{
-		value_type *value_ptr;
-		bool ok = get_value(&lru, offset, &value_ptr);
-		if (!ok)
-		{
-			rom_temp_file.seek(offset);
-			rom_temp_file.read(buff_switch_rom, rsize);
-			// sleep(1);
-			insert_value_to_lru(&lru, offset, buff_switch_rom);
-			dest = buff_switch_rom;
-		}
-		else
-		{
-			dest = (uint8_t *)value_ptr;
-		}
 	}
 
 	void writeNorBank(uint32_t offset, uint8_t *bank)
@@ -206,27 +190,18 @@ namespace wqx
 		}
 		else if (bank_idx >= 0x80)
 		{
-			if (bank_idx != last_rom_bank || volume_idx != last_rom_volume)
+			if (volume_idx & 0x01)
 			{
-				if (volume_idx & 0x01)
-				{
-					// Serial.printf("get rom %d\n", bank_idx);
-					readRomBank(rom_volume1[bank_idx], temp_switch_rom, rsize);
-				}
-				else if (volume_idx & 0x02)
-				{
-					// Serial.printf("get rom %d\n", bank_idx);
-					readRomBank(rom_volume2[bank_idx], temp_switch_rom, rsize);
-				}
-				else
-				{
-					// Serial.printf("get rom %d\n", bank_idx);
-					readRomBank(rom_volume0[bank_idx], temp_switch_rom, rsize);
-				}
-				last_rom_bank = bank_idx;
-				last_rom_volume = volume_idx;
+				return rom_volume1[bank_idx];
 			}
-			return temp_switch_rom;
+			else if (volume_idx & 0x02)
+			{
+				return rom_volume2[bank_idx];
+			}
+			else
+			{
+				return rom_volume0[bank_idx];
+			}
 		}
 		return NULL;
 	}
@@ -238,20 +213,13 @@ namespace wqx
 
 		Serial.printf("switch_bank %d\n", bank_idx);
 
-		// Serial.printf("memmap 2\n");
 		memmap[2] = temp_switch_bank;
-
-		// Serial.printf("memmap 3\n");
 		memmap[3] = temp_switch_bank + 0x2000;
-
-		// Serial.printf("memmap 4\n");
 		memmap[4] = temp_switch_bank + 0x4000;
-
-		// Serial.printf("memmap 5\n");
 		memmap[5] = temp_switch_bank + 0x6000;
 	}
 
-	uint32_t *GetVolumm(uint8_t volume_idx)
+	uint8_t **GetVolume(uint8_t volume_idx)
 	{
 		// Serial.printf("get_volumn\n");
 		if ((volume_idx & 0x03) == 0x01)
@@ -272,18 +240,16 @@ namespace wqx
 	{
 		uint8_t volume_idx = ram_io[0x0D];
 		Serial.printf("switch_volume %d\n", volume_idx);
-		uint32_t *volume = GetVolumm(volume_idx);
+		uint8_t **volume = GetVolume(volume_idx);
 		for (int i = 0; i < 4; i++)
 		{
-			readRomBank(volume[i], temp_switch_volume + i * 0x8000, 0x8000);
-			bbs_pages[i * 4] = temp_switch_volume + i * 0x8000;
-			bbs_pages[i * 4 + 1] = temp_switch_volume + i * 0x8000 + 0x2000;
-			bbs_pages[i * 4 + 2] = temp_switch_volume + i * 0x8000 + 0x4000;
-			bbs_pages[i * 4 + 3] = temp_switch_volume + i * 0x8000 + 0x6000;
+			bbs_pages[i * 4] = volume[i];
+			bbs_pages[i * 4 + 1] = volume[i] + 0x2000;
+			bbs_pages[i * 4 + 2] = volume[i] + 0x4000;
+			bbs_pages[i * 4 + 3] = volume[i] + 0x6000;
 		}
 		bbs_pages[1] = ram_page3;
-
-		readRomBank(volume[0] + 0x2000, memmap[7], 0x2000);
+		memmap[7] = volume[0] + 0x2000;
 
 		uint8_t roa_bbs = ram_io[0x0A];
 		memmap[1] = (roa_bbs & 0x04 ? ram_page2 : ram_page1);
@@ -690,17 +656,100 @@ namespace wqx
 		SD.remove(nc1020_rom.norTempPath.c_str());
 	}
 
-	inline uint8_t &Peek(uint8_t addr)
+	void readSDFileToBuffer(uint8_t *dest, File file, size_t seek_pos, size_t max_len)
 	{
-		// Serial.printf("peek %d\n", addr);
-
-		return ram_buff[addr];
+		Serial.printf("readSDFileToBuffer(), file=%p\n", file);
+		size_t len = 0;
+		uint32_t start = millis();
+		uint32_t end = start;
+		if (file)
+		{
+			len = file.size();
+			size_t flen = len;
+			len = len > max_len ? max_len : len;
+			start = millis();
+			size_t bytesRead = 0;
+			if (seek_pos > 0)
+			{
+				file.seek(seek_pos);
+			}
+			while (len)
+			{
+				size_t toRead = len;
+				if (toRead > 512)
+				{
+					toRead = 512;
+				}
+				file.read(dest + bytesRead, toRead);
+				bytesRead += 512;
+				len -= toRead;
+			}
+			end = millis() - start;
+			Serial.printf("%u bytes read for %u ms\n", bytesRead, end);
+			file.close();
+		}
+		else
+		{
+			Serial.println("Failed to open file for reading....");
+		}
 	}
+
+	void read_bank_from_rom_file(size_t bank_idx)
+	{
+		File romFile = SD.open(nc1020_rom.romTempPath.c_str());
+		readSDFileToBuffer(my_rom_buff, romFile, bank_idx * 0x100, 0x100);
+		romFile.close();
+		Serial.printf("%d: 0x%02X,0x%02X,0x%02X,0x%02X,\n", bank_idx,
+									my_rom_buff[0],
+									my_rom_buff[1],
+									my_rom_buff[2],
+									my_rom_buff[3]);
+	}
+
+	uint8_t *peekROMByte(size_t pos)
+	{
+		auto bank_idx = pos / 0x100;
+		auto addr = pos % 0x100;
+
+		value_type *value_ptr;
+		bool ok = get_value(&lru, bank_idx, &value_ptr);
+		if (!ok)
+		{
+			read_bank_from_rom_file(bank_idx);
+			// sleep(1);
+			insert_value_to_lru(&lru, bank_idx, my_rom_buff);
+			my_rom_buff0 = my_rom_buff[addr];
+			// Serial.printf("peek() miss cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
+		}
+		else
+		{
+			my_rom_buff0 = (*value_ptr)[addr];
+			// Serial.printf("peek() got cache, bank=0x%02x, size=%d\n", bank_idx, lru.size);
+		}
+		// fclose(rom_file);
+		return &my_rom_buff0;
+	}
+
 	inline uint8_t &Peek(uint16_t addr)
 	{
-		// Serial.printf("peek %d\n", addr);
-		return memmap[addr / 0x2000][addr % 0x2000];
+		uint8_t *ptr = memmap[addr / 0x2000];
+		if (ptr >= rom_buff + 0xFFFFFF && ptr < rom_buff + 0xFFFFFF + ROM_SIZE)
+		{
+			size_t offset = ptr - 0xFFFFFF - rom_buff;
+			auto pos = offset + (addr % 0x2000);
+			return *peekROMByte(pos);
+		}
+		else if (ptr >= nc1020_states.ram &&
+						 ptr < nc1020_states.ram + sizeof(nc1020_states.ram))
+		{
+			return ptr[addr % 0x2000];
+		}
+		else
+		{
+			return ptr[addr % 0x2000];
+		}
 	}
+
 	inline uint16_t PeekW(uint16_t addr)
 	{
 		return Peek(addr) | (Peek((uint16_t)(addr + 1)) << 8);
@@ -913,14 +962,14 @@ namespace wqx
 
 	void Initialize(WqxRom rom)
 	{
-		init_lru(&lru, 2);
+		init_lru(&lru, 512);
 		print_lru(&lru);
 		nc1020_rom = rom;
 		for (uint32_t i = 0; i < 0x100; i++)
 		{
-			rom_volume0[i] = (0x8000 * i);
-			rom_volume1[i] = (0x8000 * (0x100 + i));
-			rom_volume1[i] = (0x8000 * (0x200 + i));
+			rom_volume0[i] = rom_buff + 0XFFFFFF + (0x8000 * i);
+			rom_volume1[i] = rom_buff + 0XFFFFFF + (0x8000 * (0x100 + i));
+			rom_volume1[i] = rom_buff + 0XFFFFFF + (0x8000 * (0x200 + i));
 		}
 		for (uint32_t i = 0; i < 0x20; i++)
 		{
@@ -967,10 +1016,7 @@ namespace wqx
 	void ResetStates()
 	{
 		version = VERSION;
-		temp_switch_rom = (uint8_t *)malloc(0x8000);
 		temp_switch_nor = (uint8_t *)malloc(0x8000);
-		temp_switch_volume = (uint8_t *)malloc(4 * 0x8000);
-		memmap[7] = (uint8_t *)malloc(0x2000);
 
 		memset(ram_buff, 0, 0x8000);
 		memmap[0] = ram_page0;

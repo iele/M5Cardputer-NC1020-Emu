@@ -10,7 +10,7 @@
 
 // 定义key和value的类型
 typedef int key_type;
-typedef uint8_t value_type[0x200];
+typedef uint8_t value_type[0x100];
 
 // 定义节点结构体，包含key、value和指向上一个和下一个节点的指针
 typedef struct node_t {
