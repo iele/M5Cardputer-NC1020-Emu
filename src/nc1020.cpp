@@ -1,7 +1,15 @@
 #include "nc1020.h"
 
+#if defined(ARDUINO)
 #include <M5Cardputer.h>
 #include <SD.h>
+#else
+#include <M5Unified.h>
+#include <stdio.h>
+#include <unistd.h>
+#endif
+
+typedef FILE *File;
 
 namespace wqx
 {
@@ -145,9 +153,9 @@ namespace wqx
 	static io_read_func_t io_read[0x40];
 	static io_write_func_t io_write[0x40];
 
-	static uint8_t last_nor_bank = 0xFFFFFFFF;
-	static uint8_t last_rom_bank = 0xFFFFFFFF;
-	static uint8_t last_rom_volume = 0xFFFFFFFF;
+	static uint8_t last_nor_bank = 0xFF;
+	static uint8_t last_rom_bank = 0xFF;
+	static uint8_t last_rom_volume = 0xFF;
 	static uint8_t *temp_switch_nor;
 	static uint8_t *temp_switch_rom;
 	static uint8_t *temp_switch_volume;
@@ -157,22 +165,39 @@ namespace wqx
 
 	void readNorBank(uint32_t offset, uint8_t *dest, size_t rsize)
 	{
+#if defined(ARDUINO)
 		nor_temp_file.seek(offset);
 		nor_temp_file.read(dest, rsize);
+#else
+		fseek(nor_temp_file, offset, SEEK_SET);
+		fread(dest, sizeof(uint8_t), rsize, nor_temp_file);
+#endif
 	}
 	void readRomBank(uint32_t offset, uint8_t *dest, size_t rsize)
 	{
+#if defined(ARDUINO)
 		rom_temp_file.seek(offset);
 		rom_temp_file.read(dest, rsize);
+#else
+		fseek(rom_temp_file, offset, SEEK_SET);
+		fread(dest, sizeof(uint8_t), rsize, rom_temp_file);
+#endif
 	}
 
 	void writeNorBank(uint32_t offset, uint8_t *bank)
 	{
-		// Serial.printf("write cur_bank to %d\n", offset);
+// Serial.printf("write cur_bank to %d\n", offset);
+#if defined(ARDUINO)
 		File temp_file = SD.open(nc1020_rom.norTempPath.c_str(), FILE_WRITE);
 		temp_file.seek(offset);
 		temp_file.write(bank, 0x8000);
 		temp_file.close();
+#else
+		File temp_file = fopen(nc1020_rom.norTempPath.c_str(), "w");
+		fseek(temp_file, offset, SEEK_SET);
+		fwrite(bank, sizeof(uint8_t), 0x8000, temp_file);
+		fclose(temp_file);
+#endif
 	}
 
 	uint8_t *GetBank(uint8_t bank_idx, size_t rsize)
@@ -219,7 +244,11 @@ namespace wqx
 		uint8_t bank_idx = ram_io[0x00];
 		uint8_t *temp_switch_bank = GetBank(bank_idx, 0x8000);
 
+#if defined(ARDUINO)
 		Serial.printf("switch_bank %d\n", bank_idx);
+#else
+		printf("switch_bank %d\n", bank_idx);
+#endif
 
 		// Serial.printf("memmap 2\n");
 		memmap[2] = temp_switch_bank;
@@ -254,7 +283,11 @@ namespace wqx
 	void SwitchVolume()
 	{
 		uint8_t volume_idx = ram_io[0x0D];
+#if defined(ARDUINO)
 		Serial.printf("switch_volume %d\n", volume_idx);
+#else
+		printf("switch_volume %d\n", volume_idx);
+#endif
 		uint32_t *volume = GetVolumm(volume_idx);
 		for (int i = 0; i < 4; i++)
 		{
@@ -581,10 +614,11 @@ namespace wqx
 	void LoadRom()
 	{
 		bool need_reload = false;
+#if defined(ARDUINO)
 		if (SD.exists(nc1020_rom.romTempPath.c_str()))
 		{
 			File file = SD.open(nc1020_rom.romPath.c_str(), FILE_READ);
-			File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_READ);
+			File tempFile = SD.open(nc1020_rom.romTempPath.c_str(), FILE_WRITE);
 			if (file.size() != tempFile.size())
 			{
 				SD.remove(nc1020_rom.romTempPath.c_str());
@@ -593,10 +627,27 @@ namespace wqx
 			file.close();
 			tempFile.close();
 		}
+#else
+		if (access(nc1020_rom.romTempPath.c_str(), F_OK) == 0)
+		{
+			File file = fopen(nc1020_rom.romPath.c_str(), "r");
+			File tempFile = fopen(nc1020_rom.romTempPath.c_str(), "w");
+			fseek(file, 0, SEEK_END);
+			fseek(tempFile, 0, SEEK_END);
+			if (ftell(file) != ftell(tempFile))
+			{
+				remove(nc1020_rom.romTempPath.c_str());
+				need_reload = true;
+			}
+			fclose(file);
+			fclose(tempFile);
+		}
+#endif
 		else
 		{
 			need_reload = true;
 		}
+#if defined(ARDUINO)
 		if (need_reload)
 		{
 			uint8_t *src_buff = (uint8_t *)malloc(0x8000);
@@ -624,10 +675,42 @@ namespace wqx
 			free(dest_buff);
 		}
 		rom_temp_file = SD.open(nc1020_rom.romTempPath.c_str(), FILE_READ);
+#else
+		if (need_reload)
+		{
+			uint8_t *src_buff = (uint8_t *)malloc(0x8000);
+			uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
+			File file = fopen(nc1020_rom.romPath.c_str(), "r");
+			File tempFile = fopen(nc1020_rom.romTempPath.c_str(), "w");
+			fseek(file, 0, SEEK_END);
+			size_t file_size = ftell(file);
+			fseek(file, 0, SEEK_SET);
+			M5.Display.clearDisplay();
+			M5.Display.setCursor(0, 0);
+			M5.Display.printf("rom conv:\n");
+			for (int i = 0; i < file_size / 0x8000; i++)
+			{
+				fread(src_buff, sizeof(uint8_t), 0x8000, file);
+				if (i % 30 == 0)
+				{
+					M5.Display.printf(".");
+				}
+				ProcessBinary(dest_buff, src_buff, 0x8000);
+				fwrite(dest_buff, sizeof(uint8_t), 0x8000, tempFile);
+				fflush(tempFile);
+			}
+			fclose(file);
+			fclose(tempFile);
+			free(src_buff);
+			free(dest_buff);
+		}
+		rom_temp_file = fopen(nc1020_rom.romTempPath.c_str(), "r");
+#endif
 	}
 
 	void LoadNor()
 	{
+#if defined(ARDUINO)
 		SD.remove(nc1020_rom.norTempPath.c_str());
 		uint8_t *src_buff = (uint8_t *)malloc(0x8000);
 		uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
@@ -650,10 +733,37 @@ namespace wqx
 		free(src_buff);
 		free(dest_buff);
 		nor_temp_file = SD.open(nc1020_rom.norTempPath.c_str(), FILE_READ);
+#else
+		remove(nc1020_rom.norTempPath.c_str());
+		uint8_t *src_buff = (uint8_t *)malloc(0x8000);
+		uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
+		File file = fopen(nc1020_rom.norFlashPath.c_str(), "r");
+		File tempFile = fopen(nc1020_rom.norTempPath.c_str(), "w");
+		fseek(file, 0, SEEK_END);
+		size_t file_size = ftell(file);
+		fseek(file, 0, SEEK_SET);
+		M5.Display.clearDisplay();
+		M5.Display.setCursor(0, 0);
+		M5.Display.printf("nor conv:\n");
+		for (int i = 0; i < file_size / 0x8000; i++)
+		{
+			fread(src_buff, sizeof(uint8_t), 0x8000, file);
+			M5.Display.printf(".");
+			ProcessBinary(dest_buff, src_buff, 0x8000);
+			fwrite(dest_buff, sizeof(uint8_t), 0x8000, tempFile);
+			fflush(tempFile);
+		}
+		fclose(file);
+		fclose(tempFile);
+		free(src_buff);
+		free(dest_buff);
+		nor_temp_file = fopen(nc1020_rom.norTempPath.c_str(), "r");
+#endif
 	}
 
 	void SaveNor()
 	{
+#if defined(ARDUINO)
 		uint8_t *src_buff = (uint8_t *)malloc(0x8000);
 		uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
 		File file = SD.open(nc1020_rom.norTempPath.c_str(), FILE_READ);
@@ -671,6 +781,27 @@ namespace wqx
 		free(src_buff);
 		free(dest_buff);
 		SD.remove(nc1020_rom.norTempPath.c_str());
+#else
+		uint8_t *src_buff = (uint8_t *)malloc(0x8000);
+		uint8_t *dest_buff = (uint8_t *)malloc(0x8000);
+		File file = fopen(nc1020_rom.norTempPath.c_str(), "r");
+		File tempFile = fopen(nc1020_rom.norFlashPath.c_str(), "w");
+		fseek(file, 0, SEEK_END);
+		size_t file_size = ftell(file);
+		fseek(file, 0, SEEK_SET);
+		for (int i = 0; i < file_size / 0x8000; i++)
+		{
+			fread(src_buff, sizeof(uint8_t), 0x8000, file);
+			ProcessBinary(dest_buff, src_buff, 0x8000);
+			fwrite(dest_buff, sizeof(uint8_t), 0x8000, tempFile);
+			fflush(tempFile);
+		}
+		fclose(file);
+		fclose(tempFile);
+		free(src_buff);
+		free(dest_buff);
+		remove(nc1020_rom.norTempPath.c_str());
+#endif
 	}
 
 	inline uint8_t &Peek(uint8_t addr)
@@ -889,7 +1020,7 @@ namespace wqx
 			fp_step = 0;
 			goto free;
 		}
-    printf("error occurs when operate in flash!");
+		printf("error occurs when operate in flash!");
 	free:
 		free(bank);
 	}
@@ -1002,6 +1133,7 @@ namespace wqx
 	void LoadStates()
 	{
 		ResetStates();
+#if defined(ARDUINO)
 		File file = SD.open(nc1020_rom.statesPath.c_str(), FILE_READ);
 		if (file == NULL)
 		{
@@ -1009,6 +1141,15 @@ namespace wqx
 		}
 		file.read((uint8_t *)&nc1020_states, sizeof(nc1020_states));
 		file.close();
+#else
+		File file = fopen(nc1020_rom.statesPath.c_str(), "r");
+		if (file == NULL)
+		{
+			return;
+		}
+		fread((uint8_t *)&nc1020_states, sizeof(nc1020_states), 1, file);
+		fclose(file);
+#endif
 		if (version != VERSION)
 		{
 			return;
@@ -1018,10 +1159,17 @@ namespace wqx
 
 	void SaveStates()
 	{
+#if defined(ARDUINO)
 		File file = SD.open(nc1020_rom.statesPath.c_str(), FILE_WRITE, true);
 		file.write((uint8_t *)&nc1020_states, sizeof(nc1020_states));
 		file.flush();
 		file.close();
+#else
+		File file = fopen(nc1020_rom.statesPath.c_str(), "w");
+		fwrite((uint8_t *)&nc1020_states, sizeof(nc1020_states), 1, file);
+		fflush(file);
+		fclose(file);
+#endif
 	}
 
 	void LoadNC1020()

@@ -1,10 +1,12 @@
+#if defined(ARDUINO)
 #include <M5Cardputer.h>
 #include <M5GFX.h>
-
-#include "nc1020.h"
-
 #include "SPI.h"
 #include "SD.h"
+#else
+#include <M5Unified.h>
+#endif
+#include "nc1020.h"
 
 // #define SD_SPI_SCK_PIN 36
 // #define SD_SPI_MISO_PIN 35
@@ -50,43 +52,6 @@ bool kb_state[KEY_SIZE] = {0};
 const char extend_kb_map[14] = {
     0x3B, 0x0b, 0x0c, 0x0d, 0x0a, 0x09, 0x08, 0x0e, 0x25, 0x26, 0x3c, 0x10, 0x12, 0x11};
 
-void setup()
-{
-  M5Cardputer.begin();
-  M5Cardputer.Display.setRotation(1);
-  sd_begin();
-
-  // todo testing
-  renderer.setColorDepth(8);
-  renderer.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);
-  renderer.createPalette();
-  renderer.setPaletteColor(1, TFT_BLACK);
-  renderer.setPaletteColor(0, TFT_WHITE);
-  renderer.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
-
-  wqx::WqxRom rom = {
-      .romPath = "/obj_lu.bin",
-      .norFlashPath = "/nc1020.fls",
-      .statesPath = "/nc1020.sts",
-
-      .romTempPath = "/__tmp_obj_lu.bin",
-      .norTempPath = "/__tmp_nc1020.fls",
-  };
-
-  M5Cardputer.Display.print("Load ROM...\n");
-  wqx::Initialize(rom);
-  M5Cardputer.Display.print("Load NOR...\n");
-  wqx::LoadNC1020();
-  M5Cardputer.Display.print("\nLoad Completed\n");
-  M5Cardputer.Display.clearDisplay();
-}
-
-void loop()
-{
-  RunGame();
-  wqx::SaveNC1020();
-}
-
 void Render()
 {
   if (lcd_buf == NULL)
@@ -103,23 +68,25 @@ void Render()
   renderer.display();
 
   // Serial.println("render push");
-  renderer.pushRotateZoomWithAA(&M5Cardputer.Display, M5Cardputer.Display.width() / 2,
-                                M5Cardputer.Display.height() / 2, 0,
+  renderer.pushRotateZoomWithAA(&M5.Display, M5.Display.width() / 2,
+                                M5.Display.height() / 2, 0,
                                 //                             1, 1);
-                                (float)M5Cardputer.Display.width() / (float)SCREEN_WIDTH, (float)M5Cardputer.Display.height() / (float)SCREEN_HEIGHT);
-  M5Cardputer.Display.display();
+                                (float)M5.Display.width() / (float)SCREEN_WIDTH, (float)M5.Display.height() / (float)SCREEN_HEIGHT);
+  M5.Display.display();
 }
 
 void ProcessKeyboard()
 {
-  if (M5Cardputer.BtnA.wasPressed())
+  if (M5.BtnA.wasPressed())
   {
     wqx::SetKey(0x0f, true);
   }
-  if (M5Cardputer.BtnA.wasReleased())
+  if (M5.BtnA.wasReleased())
   {
     wqx::SetKey(0x0f, false);
   }
+
+#if defined(Arduino)
   std::vector<Point2D_t> keys = M5Cardputer.Keyboard.keyList();
   bool new_kb_state[KEY_SIZE] = {0};
   bool ex_mode = false;
@@ -169,6 +136,7 @@ void ProcessKeyboard()
     }
     kb_state[i] = new_kb_state[i];
   }
+#endif
 }
 
 void RunGame()
@@ -177,8 +145,8 @@ void RunGame()
 
   while (loop)
   {
-    M5Cardputer.update();
-    uint64_t tick = millis();
+    M5.update();
+    uint64_t tick = lgfx::v1::millis();
     // Serial.printf("run %ld\n", tick);
     wqx::RunTimeSlice(FRAME_INTERVAL, false);
     // Serial.printf("keyboard %ld\n", tick);
@@ -187,18 +155,18 @@ void RunGame()
     // Serial.printf("lcd %ld\n", tick);
     if (!wqx::CopyLcdBuffer(lcd_buf))
     {
-      M5Cardputer.Display.drawString("Failed to copy buffer renderer.\n", 0, 0);
+      M5.Display.drawString("Failed to copy buffer renderer.\n", 0, 0);
     }
     else
     {
       Render();
     }
 
-    uint64_t diff = millis() - tick;
+    uint64_t diff = lgfx::v1::millis() - tick;
     uint64_t delay_mills = FRAME_INTERVAL < diff ? 0 : (FRAME_INTERVAL - diff);
     // Serial.printf("delay %ld\n", delay_mills);
-    delay(delay_mills);
-    diff = millis() - tick;
+    lgfx::v1::delay(delay_mills);
+    diff = lgfx::v1::millis() - tick;
 
     M5.Display.setCursor(0, 0);
     M5.Display.printf("HZ: %d", 1000 / diff);
@@ -207,13 +175,14 @@ void RunGame()
 
 void sd_begin()
 {
-  M5Cardputer.Display.setTextSize(1);
-  M5Cardputer.Display.print("SDCard Checking...\n");
+  M5.Display.setTextSize(1);
+  M5.Display.print("SDCard Checking...\n");
 
+#if defined(Arduino)
   SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
   if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000))
   {
-    M5Cardputer.Display.print("SDCard Failed\n");
+    M5.Display.print("SDCard Failed\n");
     while (1)
       ;
   }
@@ -221,10 +190,80 @@ void sd_begin()
 
   if (cardType == CARD_NONE)
   {
-    M5Cardputer.Display.print("SDCard Failed\n");
+    M5.Display.print("SDCard Failed\n");
     return;
   }
 
   uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-  M5Cardputer.Display.printf("SD Size: %lluMB\n", cardSize);
+  M5.Display.printf("SD Size: %lluMB\n", cardSize);
+#endif
 }
+
+void setup()
+{
+  M5.begin();
+  M5.Display.setRotation(1);
+  M5.Display.display();
+  sd_begin();
+
+  // todo testing
+  renderer.setColorDepth(8);
+  renderer.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);
+  renderer.createPalette();
+  renderer.setPaletteColor(1, TFT_BLACK);
+  renderer.setPaletteColor(0, TFT_WHITE);
+  renderer.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
+
+  wqx::WqxRom rom = {
+#if defined(ARDUINO)
+      .romPath = "/obj_lu.bin",
+      .norFlashPath = "/nc1020.fls",
+      .statesPath = "/nc1020.sts",
+      .romTempPath = "/__tmp_obj_lu.bin",
+      .norTempPath = "/__tmp_nc1020.fls",
+#else
+      .romPath = "./obj_lu.bin",
+      .norFlashPath = "./nc1020.fls",
+      .statesPath = "./nc1020.sts",
+      .romTempPath = "./__tmp_obj_lu.bin",
+      .norTempPath = "./__tmp_nc1020.fls",
+#endif
+  };
+
+  M5.Display.print("Load ROM...\n");
+  wqx::Initialize(rom);
+  M5.Display.print("Load NOR...\n");
+  wqx::LoadNC1020();
+  M5.Display.print("\nLoad Completed\n");
+  M5.Display.clearDisplay();
+}
+
+void loop()
+{
+  RunGame();
+  wqx::SaveNC1020();
+}
+
+#if !defined(ARDUINO)
+extern "C"
+{
+__attribute__((weak))
+int user_func(bool* running)
+{
+  setup();
+  do
+  {
+    loop();
+  } while (*running);
+  return 0;
+}
+
+int main(int, char**)
+{
+  // The second argument is effective for step execution with breakpoints.
+  // You can specify the time in milliseconds to perform slow execution that ensures screen updates.
+  return lgfx::Panel_sdl::main(user_func, 128);
+}
+}
+#endif
+
